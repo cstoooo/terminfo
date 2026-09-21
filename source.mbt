@@ -162,3 +162,224 @@ fn parse_num(s : String) -> Int raise ParseError {
     v
   }
 }
+
+///|
+/// Expand the escape sequences of a source string value into raw bytes.
+/// Handles `\E`, `\e`, `\n`, `\l`, `\r`, `\t`, `\b`, `\f`, `\s`, `\:`,
+/// `\^`, `\\`, `\,`, `\|`, octal `\NNN` (up to 3 digits), and `^X`
+/// control notation (`^?` is DEL). A backslash at end of line continues
+/// the value on the next line.
+pub fn unescape_value(raw : String) -> Bytes raise ParseError {
+  let buf = Buffer::Buffer(size_hint=raw.length())
+  let n = raw.length()
+  let mut i = 0
+  while i < n {
+    let c = raw[i]
+    if c == '\\' {
+      if i + 1 >= n {
+        raise ParseError::BadSyntax("trailing backslash in string value")
+      }
+      let e = raw[i + 1]
+      if e == '\n' {
+        i += 2
+        continue
+      }
+      let byte = match e {
+        'E' | 'e' => 0x1B
+        'n' | 'l' => 0x0A
+        'r' => 0x0D
+        't' => 0x09
+        'b' => 0x08
+        'f' => 0x0C
+        's' => 0x20
+        ':' => 0x3A
+        '^' => 0x5E
+        '\\' => 0x5C
+        ',' => 0x2C
+        '|' => 0x7C
+        _ => -1
+      }
+      if byte >= 0 {
+        buf.write_byte(byte.to_byte())
+        i += 2
+        continue
+      }
+      if e >= '0' && e <= '7' {
+        let mut v = 0
+        let mut k = 0
+        while k < 3 && i + 1 + k < n {
+          let d = raw[i + 1 + k]
+          if d < '0' || d > '7' {
+            break
+          }
+          v = v * 8 + (d.to_int() - b'0'.to_int())
+          k += 1
+        }
+        buf.write_byte(v.to_byte())
+        i += 1 + k
+        continue
+      }
+      raise ParseError::BadSyntax("unknown escape \\\{e} in string value")
+    }
+    if c == '^' {
+      if i + 1 >= n {
+        raise ParseError::BadSyntax("trailing ^ in string value")
+      }
+      let e = raw[i + 1]
+      if e == '?' {
+        buf.write_byte(b'\x7F')
+      } else {
+        buf.write_byte((e.to_int() & 0x1F).to_byte())
+      }
+      i += 2
+      continue
+    }
+    let v = c.to_int()
+    if v > 0x7F {
+      raise ParseError::BadSyntax("non-ASCII character in string value")
+    }
+    buf.write_byte(v.to_byte())
+    i += 1
+  }
+  buf.to_bytes()
+}
+
+///|
+/// Parse one entry block.
+fn parse_block(block : Array[String]) -> SourceEntry raise ParseError {
+  // Names: `primary|alias|verbose`.
+  let names : Array[String] = []
+  let first = block[0]
+  let n = first.length()
+  let mut start = 0
+  for i = 0; i < n; i = i + 1 {
+    if first[i] == '|' {
+      let name = trim_ws(first[start:i].to_owned())
+      if name.length() > 0 {
+        names.push(name)
+      }
+      start = i + 1
+    }
+  }
+  // The names line conventionally ends with `,` (the field separator);
+  // tic drops it, so the verbose name must not carry it.
+  let last = {
+    let t = trim_ws(first[start:n].to_owned())
+    let mut end = t.length()
+    while end > 0 && t[end - 1] == ',' {
+      end -= 1
+    }
+    t[0:end].to_owned()
+  }
+  if last.length() > 0 {
+    names.push(last)
+  }
+  if names.length() == 0 {
+    raise ParseError::BadSyntax("entry has no terminal name")
+  }
+
+  // Capability fields: continuation lines are joined, with their leading
+  // whitespace discarded.
+  let body = StringBuilder(size_hint=128)
+  for i = 1; i < block.length(); i = i + 1 {
+    body.write_string(trim_ws(block[i]))
+  }
+  let se : SourceEntry = {
+    names,
+    booleans: Map([]),
+    numbers: Map([]),
+    strings: Map([]),
+    uses: [],
+    canceled: [],
+  }
+  for field in split_fields(body.to_string()) {
+    if field.length() > 0 {
+      parse_field(field, se)
+    }
+  }
+  se
+}
+
+///|
+/// Parse one capability field of an entry: `name`, `name#N`, `name=value`,
+/// `name@`, or `use=target` (also `tc=target` for termcap sources).
+fn parse_field(field : String, se : SourceEntry) -> Unit raise ParseError {
+  let n = field.length()
+  let mut k = 0
+  while k < n && field[k] != '#' && field[k] != '=' {
+    k += 1
+  }
+  let name = trim_ws(field[0:k].to_owned())
+  if name.length() == 0 {
+    raise ParseError::BadSyntax("empty capability name")
+  }
+  if k < n && field[k] == '#' {
+    let num_str = trim_ws(field[k + 1:n].to_owned())
+    se.numbers.set(name, parse_num(num_str))
+    return
+  }
+  if k < n && field[k] == '=' {
+    if name == "use" || name == "tc" {
+      let target = trim_ws(field[k + 1:n].to_owned())
+      if target.length() == 0 {
+        raise ParseError::BadSyntax("use= with empty target")
+      }
+      se.uses.push(target)
+      return
+    }
+    se.strings.set(name, trim_ws(field[k + 1:n].to_owned()))
+    return
+  }
+  // Bare name: a boolean flag, or a cancellation when suffixed with @.
+  if name.has_suffix("@") {
+    let real = trim_ws(name[0:name.length() - 1].to_owned())
+    match bool_idx(real) {
+      Some(_) => se.booleans.set(real, 2)
+      None =>
+        match num_idx(real) {
+          Some(_) => se.numbers.set(real, -2)
+          None => se.canceled.push(real)
+        }
+    }
+    return
+  }
+  se.booleans.set(name, 1)
+}
+
+///|
+/// Resolve a capability name to its binary index, accepting both the long
+/// name (`columns`) and the two-character code (`co`).
+fn bool_idx(name : String) -> Int? {
+  match bool_index.get(name) {
+    Some(i) => Some(i)
+    None => bool_code_index.get(name)
+  }
+}
+
+///|
+fn num_idx(name : String) -> Int? {
+  match num_index.get(name) {
+    Some(i) => Some(i)
+    None => num_code_index.get(name)
+  }
+}
+
+///|
+fn str_idx(name : String) -> Int? {
+  match str_index.get(name) {
+    Some(i) => Some(i)
+    None => str_code_index.get(name)
+  }
+}
+
+///|
+/// Parse a complete terminfo source file (the `terminfo.src` language) into
+/// its entries. Entries keep their raw source escapes; compile with
+/// `compile` to get binary-ready `Entry` values.
+pub fn parse_source(text : String) -> Array[SourceEntry] raise ParseError {
+  let out : Array[SourceEntry] = []
+  for block in make_blocks(split_lines(text)) {
+    out.push(parse_block(block))
+  }
+  out
+}
