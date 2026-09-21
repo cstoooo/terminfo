@@ -1,0 +1,87 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "username/terminfo"
+
+// Values
+pub let bool_code_index : Map[String, Int]
+
+pub let bool_index : Map[String, Int]
+
+pub let bool_names : Array[String]
+
+pub fn compile(Array[SourceEntry], String) -> Entry raise ParseError
+
+pub fn empty() -> Entry
+
+pub let num_code_index : Map[String, Int]
+
+pub let num_index : Map[String, Int]
+
+pub let num_names : Array[String]
+
+pub fn parse(Bytes) -> Entry raise ParseError
+
+pub fn parse_source(String) -> Array[SourceEntry] raise ParseError
+
+pub let str_code_index : Map[String, Int]
+
+pub let str_index : Map[String, Int]
+
+pub let str_names : Array[String]
+
+pub fn strip_padding(Bytes) -> Bytes
+
+pub fn to_bytes(Entry) -> Bytes raise ParseError
+
+pub fn tparm(Bytes, Array[Int], string_params? : Array[Bytes]) -> Bytes raise ExpandError
+
+pub fn unescape_value(String) -> Bytes raise ParseError
+
+// Errors
+pub suberror ExpandError {
+  BadPercent(String)
+  StackUnderflow(String)
+  Unbalanced(String)
+}
+
+pub suberror ParseError {
+  BadMagic(Int)
+  Truncated
+  BadCount(String)
+  BadOffset(String)
+  CyclicUse(String)
+  BadSyntax(String)
+}
+
+// Types and methods
+pub struct Entry {
+  mut names : Array[String]
+  booleans : Array[Int]
+  numbers : Array[Int]
+  strings : Array[Bytes?]
+  ext_booleans : Map[String, Int]
+  ext_numbers : Map[String, Int]
+  ext_strings : Map[String, Bytes]
+  ext_canceled_strings : Array[String]
+}
+pub fn Entry::get_bool(Self, String) -> Bool?
+pub fn Entry::get_bool_code(Self, String) -> Bool?
+pub fn Entry::get_num(Self, String) -> Int?
+pub fn Entry::get_num_code(Self, String) -> Int?
+pub fn Entry::get_str(Self, String) -> Bytes?
+pub fn Entry::get_str_code(Self, String) -> Bytes?
+pub fn Entry::longname(Self) -> String
+pub fn Entry::names(Self) -> Array[String]
+pub fn Entry::primary_name(Self) -> String
+
+pub struct SourceEntry {
+  names : Array[String]
+  booleans : Map[String, Int]
+  numbers : Map[String, Int]
+  strings : Map[String, String]
+  uses : Array[String]
+  canceled : Array[String]
+}
+
+// Type aliases
+
+// Traits
