@@ -335,3 +335,249 @@ pub fn parse(bytes : Bytes) -> Entry raise ParseError {
     ext_canceled_strings: ext_canceled,
   }
 }
+
+///|
+/// Serialize an `Entry` to the compiled terminfo binary format.
+///
+/// The output is canonical: the magic number is chosen from the widest
+/// number in the entry (0o432 for 16-bit numbers, 0o1036 for 32-bit), each
+/// section extends to its last non-absent capability, and extended
+/// capabilities are written in sorted name order.
+pub fn to_bytes(entry : Entry) -> Bytes raise ParseError {
+  // Names section: `name|alias|verbose\0`.
+  for name in entry.names {
+    if name.contains("|") || name.contains(" ") {
+      raise ParseError::BadCount("terminal name contains `|` or NUL")
+    }
+  }
+  if entry.names.length() == 0 {
+    raise ParseError::BadCount("entry has no names")
+  }
+  let name_bytes = @utf8.encode(entry.names.join("|"))
+  if name_bytes.length() + 1 > 32767 {
+    raise ParseError::BadCount("names section too large")
+  }
+
+  // Section extents.
+  let bool_count = max_used_index(entry.booleans, 0)
+  let num_count = max_used_index(entry.numbers, -1)
+  let mut str_count = 0
+  for i = 0; i < entry.strings.length(); i = i + 1 {
+    match entry.strings[i] {
+      Some(_) => str_count = i + 1
+      None => ()
+    }
+  }
+  if bool_count > 32767 || num_count > 32767 || str_count > 32767 {
+    raise ParseError::BadCount("capability section too large")
+  }
+
+  // Number width: int32 when any value needs more than 16 bits.
+  let mut need_int32 = false
+  for i = 0; i < entry.numbers.length(); i = i + 1 {
+    let v = entry.numbers[i]
+    if v < -2 {
+      raise ParseError::BadCount("illegal numeric value: \{v}")
+    }
+    if v > 32767 {
+      need_int32 = true
+    }
+  }
+  for v in entry.ext_numbers.values() {
+    if v < -2 {
+      raise ParseError::BadCount("illegal extended numeric value: \{v}")
+    }
+    if v > 32767 {
+      need_int32 = true
+    }
+  }
+  let magic = if need_int32 { 0o1036 } else { 0o432 }
+
+  // String table.
+  let offsets = Array::make(str_count, -1)
+  let mut nextfree = 0
+  for i = 0; i < str_count; i = i + 1 {
+    match entry.strings[i] {
+      Some(v) => {
+        offsets[i] = nextfree
+        nextfree += v.length() + 1
+      }
+      None => ()
+    }
+  }
+  if nextfree > 32767 {
+    raise ParseError::BadCount("string table too large")
+  }
+
+  // Extended section layout: sorted names, values then names.
+  let ext_bool_names = entry.ext_booleans.keys().iter().to_array()
+  ext_bool_names.sort()
+  let ext_num_names = entry.ext_numbers.keys().iter().to_array()
+  ext_num_names.sort()
+  let ext_str_present = entry.ext_strings.keys().iter().to_array()
+  ext_str_present.sort()
+  let ext_str_canceled = entry.ext_canceled_strings.iter().to_array()
+  ext_str_canceled.sort()
+  let ext_str_names : Array[String] = ext_str_present.iter().to_array()
+  for c in ext_str_canceled {
+    ext_str_names.push(c)
+  }
+  let ext_bool_count = ext_bool_names.length()
+  let ext_num_count = ext_num_names.length()
+  let ext_str_count = ext_str_names.length()
+  let ext_names_total = ext_bool_count + ext_num_count + ext_str_count
+  let has_ext = ext_bool_count > 0 || ext_num_count > 0 || ext_str_count > 0
+
+  // Canceled strings carry the offset -2, as in ncurses.
+  let ext_str_offsets = Array::make(ext_str_count, -1)
+  let mut ext_nextfree = 0
+  for i = 0; i < ext_str_present.length(); i = i + 1 {
+    ext_str_offsets[i] = ext_nextfree
+    ext_nextfree += entry.ext_strings[ext_str_present[i]].length() + 1
+  }
+  for i = 0; i < ext_str_canceled.length(); i = i + 1 {
+    ext_str_offsets[ext_str_present.length() + i] = -2
+  }
+  let ext_names_start = ext_nextfree
+  let mut ext_size = ext_names_start
+  for i = 0; i < ext_names_total; i = i + 1 {
+    ext_size += @utf8.encode(
+        ext_str_names_of(i, ext_bool_names, ext_num_names, ext_str_names),
+      ).length() +
+      1
+  }
+  if ext_size > 32767 {
+    raise ParseError::BadCount("extended string table too large")
+  }
+
+  // Assemble.
+  let buf = Buffer::Buffer(size_hint=64)
+  buf.write_int16_le(Int16::from_int(magic))
+  buf.write_int16_le(Int16::from_int(name_bytes.length() + 1))
+  buf.write_int16_le(Int16::from_int(bool_count))
+  buf.write_int16_le(Int16::from_int(num_count))
+  buf.write_int16_le(Int16::from_int(str_count))
+  buf.write_int16_le(Int16::from_int(nextfree))
+  buf.write_bytes(name_bytes)
+  buf.write_byte(b'\x00')
+  for i = 0; i < bool_count; i = i + 1 {
+    let b = entry.booleans[i]
+    buf.write_byte(
+      if b == 1 {
+        b'\x01'
+      } else if b == 2 {
+        b'\xFE'
+      } else {
+        b'\x00'
+      },
+    )
+  }
+  if (12 + name_bytes.length() + 1 + bool_count) % 2 == 1 {
+    buf.write_byte(b'\x00')
+  }
+  for i = 0; i < num_count; i = i + 1 {
+    let v = entry.numbers[i]
+    if need_int32 {
+      buf.write_int_le(v)
+    } else {
+      buf.write_int16_le(Int16::from_int(v))
+    }
+  }
+  for i = 0; i < str_count; i = i + 1 {
+    buf.write_int16_le(Int16::from_int(offsets[i]))
+  }
+  for i = 0; i < str_count; i = i + 1 {
+    match entry.strings[i] {
+      Some(v) => {
+        if v.iter().any(fn(b) { b == b'\x00' }) {
+          raise ParseError::BadCount("NUL byte inside string capability value")
+        }
+        buf.write_bytes(v)
+        buf.write_byte(b'\x00')
+      }
+      None => ()
+    }
+  }
+
+  if has_ext {
+    if buf.length() % 2 == 1 {
+      buf.write_byte(b'\x00')
+    }
+    let ext_usage = ext_names_total + ext_str_present.length()
+    buf.write_int16_le(Int16::from_int(ext_bool_count))
+    buf.write_int16_le(Int16::from_int(ext_num_count))
+    buf.write_int16_le(Int16::from_int(ext_str_count))
+    buf.write_int16_le(Int16::from_int(ext_usage))
+    buf.write_int16_le(Int16::from_int(ext_size))
+    for i = 0; i < ext_bool_count; i = i + 1 {
+      let b = entry.ext_booleans[ext_bool_names[i]]
+      buf.write_byte(
+        if b == 1 {
+          b'\x01'
+        } else if b == 2 {
+          b'\xFE'
+        } else {
+          b'\x00'
+        },
+      )
+    }
+    if ext_bool_count % 2 == 1 {
+      buf.write_byte(b'\x00')
+    }
+    for i = 0; i < ext_num_count; i = i + 1 {
+      let v = entry.ext_numbers[ext_num_names[i]]
+      if need_int32 {
+        buf.write_int_le(v)
+      } else {
+        buf.write_int16_le(Int16::from_int(v))
+      }
+    }
+    for i = 0; i < ext_str_count; i = i + 1 {
+      buf.write_int16_le(Int16::from_int(ext_str_offsets[i]))
+    }
+    let mut name_ofs = ext_names_start
+    for i = 0; i < ext_names_total; i = i + 1 {
+      buf.write_int16_le(Int16::from_int(name_ofs))
+      name_ofs += 1 +
+        @utf8.encode(
+          ext_str_names_of(i, ext_bool_names, ext_num_names, ext_str_names),
+        ).length()
+    }
+    for i = 0; i < ext_str_present.length(); i = i + 1 {
+      let v = entry.ext_strings[ext_str_present[i]]
+      if v.iter().any(fn(b) { b == b'\x00' }) {
+        raise ParseError::BadCount(
+          "NUL byte inside extended string capability value",
+        )
+      }
+      buf.write_bytes(v)
+      buf.write_byte(b'\x00')
+    }
+    for i = 0; i < ext_names_total; i = i + 1 {
+      let name = ext_str_names_of(
+        i, ext_bool_names, ext_num_names, ext_str_names,
+      )
+      buf.write_bytes(@utf8.encode(name))
+      buf.write_byte(b'\x00')
+    }
+  }
+  buf.to_bytes()
+}
+
+///|
+/// The i-th extended capability name: booleans first, then numbers, then
+/// strings, each group sorted.
+fn ext_str_names_of(
+  i : Int,
+  bool_names : Array[String],
+  num_names : Array[String],
+  str_names : Array[String],
+) -> String {
+  if i < bool_names.length() {
+    bool_names[i]
+  } else if i < bool_names.length() + num_names.length() {
+    num_names[i - bool_names.length()]
+  } else {
+    str_names[i - bool_names.length() - num_names.length()]
+  }
+}
