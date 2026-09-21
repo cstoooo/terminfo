@@ -77,3 +77,158 @@ pub struct SourceEntry {
   /// Names of string capabilities canceled with `name@` (standard or extended).
   canceled : Array[String]
 }
+
+///|
+pub fn Entry::names(self : Entry) -> Array[String] {
+  self.names
+}
+
+///|
+/// The primary (first) terminal name.
+pub fn Entry::primary_name(self : Entry) -> String {
+  self.names[0]
+}
+
+///|
+/// The verbose (last) name, as shown by `infocmp -d` style tools.
+pub fn Entry::longname(self : Entry) -> String {
+  self.names[self.names.length() - 1]
+}
+
+///|
+fn Entry::bool_at(self : Entry, i : Int) -> Bool? {
+  if i < self.booleans.length() {
+    match self.booleans[i] {
+      0 => Some(false)
+      1 => Some(true)
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+///|
+fn Entry::num_at(self : Entry, i : Int) -> Int? {
+  if i < self.numbers.length() {
+    let v = self.numbers[i]
+    if v < 0 {
+      None
+    } else {
+      Some(v)
+    }
+  } else {
+    None
+  }
+}
+
+///|
+fn Entry::str_at(self : Entry, i : Int) -> Bytes? {
+  if i < self.strings.length() {
+    self.strings[i]
+  } else {
+    None
+  }
+}
+
+///|
+/// Look up a Boolean capability by long name (e.g. `auto_right_margin`) or
+/// two-character terminfo code (e.g. `am`). Returns `None` when the
+/// capability is absent or canceled.
+pub fn Entry::get_bool(self : Entry, name : String) -> Bool? {
+  if self.ext_booleans.contains(name) {
+    let v = self.ext_booleans[name]
+    return if v == 0 { Some(false) } else if v == 1 { Some(true) } else { None }
+  }
+  match bool_index.get(name) {
+    Some(i) => Entry::bool_at(self, i)
+    None =>
+      match bool_code_index.get(name) {
+        Some(i) => Entry::bool_at(self, i)
+        None => None
+      }
+  }
+}
+
+///|
+/// Look up a numeric capability by long name (e.g. `columns`) or code
+/// (e.g. `cols`). Returns `None` when absent or canceled.
+pub fn Entry::get_num(self : Entry, name : String) -> Int? {
+  if self.ext_numbers.contains(name) {
+    let v = self.ext_numbers[name]
+    return if v < 0 { None } else { Some(v) }
+  }
+  match num_index.get(name) {
+    Some(i) => Entry::num_at(self, i)
+    None =>
+      match num_code_index.get(name) {
+        Some(i) => Entry::num_at(self, i)
+        None => None
+      }
+  }
+}
+
+///|
+/// Look up a string capability by long name (e.g. `cursor_address`) or code
+/// (e.g. `cup`, `sgr0`). Returns `None` when absent or canceled. The value
+/// is returned verbatim: escapes resolved, `%` sequences and `$<...>`
+/// padding intact.
+pub fn Entry::get_str(self : Entry, name : String) -> Bytes? {
+  if self.ext_canceled_strings.contains(name) {
+    return None
+  }
+  if self.ext_strings.contains(name) {
+    return Some(self.ext_strings[name])
+  }
+  match str_index.get(name) {
+    Some(i) => Entry::str_at(self, i)
+    None =>
+      match str_code_index.get(name) {
+        Some(i) => Entry::str_at(self, i)
+        None => None
+      }
+  }
+}
+
+///|
+/// Look up a Boolean capability by its two-character terminfo code (e.g. `am`).
+pub fn Entry::get_bool_code(self : Entry, code : String) -> Bool? {
+  match bool_code_index.get(code) {
+    Some(i) => Entry::bool_at(self, i)
+    None => None
+  }
+}
+
+///|
+/// Look up a numeric capability by its two-character terminfo code (e.g. `co`).
+pub fn Entry::get_num_code(self : Entry, code : String) -> Int? {
+  match num_code_index.get(code) {
+    Some(i) => Entry::num_at(self, i)
+    None => None
+  }
+}
+
+///|
+/// Look up a string capability by its two-character terminfo code (e.g. `AF`).
+pub fn Entry::get_str_code(self : Entry, code : String) -> Bytes? {
+  match str_code_index.get(code) {
+    Some(i) => Entry::str_at(self, i)
+    None => None
+  }
+}
+
+///|
+/// An empty entry with standard-section arrays sized to the full
+/// capability tables. Used as a base when compiling source entries.
+pub fn empty() -> Entry {
+  {
+    names: [],
+    booleans: Array::make(bool_names.length(), 0),
+    numbers: Array::make(num_names.length(), -1),
+    strings: Array::make(str_names.length(), None),
+    ext_booleans: Map([]),
+    ext_numbers: Map([]),
+    ext_strings: Map([]),
+    ext_canceled_strings: [],
+  }
+}
