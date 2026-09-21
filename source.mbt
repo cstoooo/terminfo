@@ -383,3 +383,135 @@ pub fn parse_source(text : String) -> Array[SourceEntry] raise ParseError {
   }
   out
 }
+
+///|
+/// Compile the entry named `name` (and everything it inherits via `use=`)
+/// into an `Entry` ready for `to_bytes`. Capabilities of the entry itself
+/// override inherited ones; earlier `use=` targets win over later ones;
+/// `name@` cancellations negate inherited values.
+pub fn compile(
+  entries : Array[SourceEntry],
+  name : String,
+) -> Entry raise ParseError {
+  resolve(name, entries, Map([]))
+}
+
+///|
+fn resolve(
+  target : String,
+  entries : Array[SourceEntry],
+  visited : Map[String, Bool],
+) -> Entry raise ParseError {
+  if visited.contains(target) {
+    raise ParseError::CyclicUse("use= cycle involving \{target}")
+  }
+  visited.set(target, true)
+  let mut found : SourceEntry? = None
+  for e in entries {
+    if e.names[0] == target {
+      found = Some(e)
+      break
+    }
+  }
+  let entry = match found {
+    Some(e) => e
+    None => {
+      visited.remove(target)
+      raise ParseError::BadSyntax("use target not found: \{target}")
+    }
+  }
+  let result = empty()
+  for u in entry.uses {
+    let base = resolve(u, entries, visited)
+    merge_into(result, base)
+  }
+  apply_own(result, entry)
+  result.names = entry.names
+  visited.remove(target)
+  result
+}
+
+///|
+/// Fill `dst` with capabilities of `src` that `dst` does not have yet.
+/// Used to apply `use=` inheritance: earlier wins.
+fn merge_into(dst : Entry, src : Entry) -> Unit {
+  for i = 0; i < dst.booleans.length(); i = i + 1 {
+    if dst.booleans[i] == 0 && i < src.booleans.length() && src.booleans[i] != 0 {
+      dst.booleans[i] = src.booleans[i]
+    }
+  }
+  for i = 0; i < dst.numbers.length(); i = i + 1 {
+    if dst.numbers[i] == -1 && i < src.numbers.length() && src.numbers[i] != -1 {
+      dst.numbers[i] = src.numbers[i]
+    }
+  }
+  for i = 0; i < dst.strings.length(); i = i + 1 {
+    match dst.strings[i] {
+      Some(_) => ()
+      None =>
+        if i < src.strings.length() {
+          match src.strings[i] {
+            Some(v) => dst.strings[i] = Some(v)
+            None => ()
+          }
+        }
+    }
+  }
+  for k in src.ext_booleans.keys() {
+    if !dst.ext_booleans.contains(k) {
+      dst.ext_booleans.set(k, src.ext_booleans[k])
+    }
+  }
+  for k in src.ext_numbers.keys() {
+    if !dst.ext_numbers.contains(k) {
+      dst.ext_numbers.set(k, src.ext_numbers[k])
+    }
+  }
+  for k in src.ext_strings.keys() {
+    if !dst.ext_strings.contains(k) && !dst.ext_canceled_strings.contains(k) {
+      dst.ext_strings.set(k, src.ext_strings[k])
+    }
+  }
+  for c in src.ext_canceled_strings {
+    if !dst.ext_canceled_strings.contains(c) {
+      dst.ext_canceled_strings.push(c)
+    }
+  }
+}
+
+///|
+/// Apply a source entry's own capabilities onto `dst`, overriding inherited
+/// values. String escapes are expanded here.
+fn apply_own(dst : Entry, entry : SourceEntry) -> Unit raise ParseError {
+  for k in entry.booleans.keys() {
+    let v = entry.booleans[k]
+    match bool_idx(k) {
+      Some(i) => dst.booleans[i] = v
+      None => dst.ext_booleans.set(k, v)
+    }
+  }
+  for k in entry.numbers.keys() {
+    let v = entry.numbers[k]
+    match num_idx(k) {
+      Some(i) => dst.numbers[i] = v
+      None => dst.ext_numbers.set(k, v)
+    }
+  }
+  for k in entry.strings.keys() {
+    let value = unescape_value(entry.strings[k])
+    match str_idx(k) {
+      Some(i) => dst.strings[i] = Some(value)
+      None => dst.ext_strings.set(k, value)
+    }
+  }
+  for name in entry.canceled {
+    match str_idx(name) {
+      Some(i) => dst.strings[i] = None
+      None =>
+        if dst.ext_strings.contains(name) {
+          dst.ext_strings.remove(name)
+          dst.ext_canceled_strings.push(name)
+        }
+    }
+  }
+}
