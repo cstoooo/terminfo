@@ -609,3 +609,66 @@ fn Tp::parse_op(self : Tp, exec : Bool) -> Int raise ExpandError {
     _ => raise ExpandError::BadPercent("unknown % conversion")
   }
 }
+
+///|
+/// Expand a parameterized terminal capability string.
+///
+/// Implements the terminfo(5) stack machine: `%p1`-`%p9`, `%P`/`%g`
+/// variables (lower- and upper-case sets), `%'c'`, `%{nn}`, `%l`, the
+/// arithmetic/bitwise/logical operators, `%i`, `%c`, `%d`/`%o`/`%x`/`%X`
+/// with printf-style flags (`-+# ` and `:` for a literal `-`), `%s`, `%%`,
+/// and `%?` conditionals with `%t`/`%e`/`%;`. Padding specs (`$<...>`) are
+/// skipped, as they are timing information, not output.
+pub fn tparm(
+  fmt : Bytes,
+  params : Array[Int],
+  string_params? : Array[Bytes] = [],
+) -> Bytes raise ExpandError {
+  // termcap compatibility (as in ncurses): when the format never uses %p,
+  // all parameters are pushed positionally, the first one on top, so that
+  // bare conversions like `%d` consume params[0].
+  let mut uses_p = false
+  let mut i = 0
+  while i < fmt.length() {
+    if fmt[i] == b'%' {
+      i += 1
+      if i < fmt.length() {
+        if fmt[i] == b'p' {
+          uses_p = true
+          break
+        }
+        i += 1
+      }
+    } else {
+      i += 1
+    }
+  }
+  let tp : Tp = {
+    fmt,
+    params,
+    string_params,
+    pos: Ref(0),
+    stack: [],
+    vars: Array::make(52, 0),
+    out: Buffer(size_hint=fmt.length() + 16),
+  }
+  if !uses_p {
+    let base = params.length()
+    for j = string_params.length() - 1; j >= 0; j = j - 1 {
+      tp.stack.push(base + j)
+    }
+    for j = params.length() - 1; j >= 0; j = j - 1 {
+      tp.stack.push(params[j])
+    }
+  }
+  while true {
+    let r = Tp::parse_op(tp, true)
+    if r == 4 {
+      break
+    }
+    if r != 0 {
+      raise ExpandError::Unbalanced("stray %t, %e or %;")
+    }
+  }
+  tp.out.to_bytes()
+}
