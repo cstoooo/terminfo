@@ -269,3 +269,343 @@ fn var_index(x : Int) -> Int raise ExpandError {
     raise ExpandError::BadPercent("variable must be a letter")
   }
 }
+
+///|
+/// Parse one `%` operation (or a literal byte) from `self.fmt`.
+/// Returns 0 when an operation or literal was consumed, 1 for `%t`,
+/// 2 for `%e`, 3 for `%;`, 4 at end of input.
+///
+/// When `exec` is false, the operation is parsed (so conditional nesting
+/// stays in sync) but not executed: nothing is pushed, popped, or output.
+fn Tp::parse_op(self : Tp, exec : Bool) -> Int raise ExpandError {
+  ///|
+  /// Parse and execute one `%?...` conditional, starting just after the
+  /// `%?`. Stops after the matching `%;`. Operands in the not-taken branch
+  /// are parsed (to keep nesting in sync) but not executed.
+  fn parse_cond(self : Tp, exec : Bool) -> Unit raise ExpandError {
+    let mut r = Tp::parse_op(self, exec)
+    while r != 1 {
+      if r == 2 || r == 3 {
+        raise ExpandError::Unbalanced("stray %e or %;")
+      }
+      if r == 4 {
+        raise ExpandError::Unbalanced("missing %t")
+      }
+      r = Tp::parse_op(self, exec)
+    }
+    let take_first = if exec { Tp::tp_pop(self) != 0 } else { false }
+    if take_first {
+      r = Tp::parse_op(self, true)
+      while r != 3 {
+        if r == 2 {
+          // Skip the %e branch.
+          let mut s = Tp::parse_op(self, false)
+          while s != 3 {
+            if s == 1 || s == 2 || s == 4 {
+              raise ExpandError::Unbalanced("malformed conditional")
+            }
+            s = Tp::parse_op(self, false)
+          }
+          break
+        }
+        if r == 1 || r == 4 {
+          raise ExpandError::Unbalanced("missing %;")
+        }
+        r = Tp::parse_op(self, true)
+      }
+    } else {
+      r = Tp::parse_op(self, false)
+      while r != 3 {
+        if r == 2 {
+          // Execute the %e branch.
+          let mut s = Tp::parse_op(self, exec)
+          while s != 3 {
+            if s == 1 || s == 2 || s == 4 {
+              raise ExpandError::Unbalanced("malformed conditional")
+            }
+            s = Tp::parse_op(self, exec)
+          }
+          break
+        }
+        if r == 1 || r == 4 {
+          raise ExpandError::Unbalanced("missing %;")
+        }
+        r = Tp::parse_op(self, false)
+      }
+    }
+  }
+
+  let n = self.fmt.length()
+  if self.pos.val >= n {
+    return 4
+  }
+  let c = self.fmt[self.pos.val]
+  self.pos.val += 1
+  if c != b'%' {
+    // Padding specifiers ($<...>) are timing information, not output.
+    if c == b'$' && self.pos.val < n && self.fmt[self.pos.val] == b'<' {
+      self.pos.val += 1
+      while self.pos.val < n && self.fmt[self.pos.val] != b'>' {
+        self.pos.val += 1
+      }
+      if self.pos.val < n {
+        self.pos.val += 1
+      }
+      return 0
+    }
+    if exec {
+      self.out.write_byte(c)
+    }
+    return 0
+  }
+  if self.pos.val >= n {
+    raise ExpandError::BadPercent("truncated % sequence")
+  }
+  let op = self.fmt[self.pos.val]
+  self.pos.val += 1
+  match op {
+    b'%' => {
+      if exec {
+        self.out.write_byte(b'%')
+      }
+      0
+    }
+    b'?' => {
+      parse_cond(self, exec)
+      0
+    }
+    b't' => 1
+    b'e' => 2
+    b';' => 3
+    b'i' => {
+      if exec {
+        if self.params.length() > 0 {
+          self.params[0] += 1
+        }
+        if self.params.length() > 1 {
+          self.params[1] += 1
+        }
+      }
+      0
+    }
+    b'p' => {
+      let d = Tp::tp_byte(self)
+      if d < b'1'.to_int() || d > b'9'.to_int() {
+        raise ExpandError::BadPercent("%p expects a digit 1-9")
+      }
+      if exec {
+        let i = d - b'1'.to_int()
+        if i >= self.params.length() {
+          raise ExpandError::StackUnderflow("parameter index out of range")
+        }
+        Tp::tp_push(self, self.params[i])
+      }
+      0
+    }
+    b'P' => {
+      let x = Tp::tp_byte(self)
+      if exec {
+        let v = Tp::tp_pop(self)
+        let i = var_index(x)
+        self.vars[i] = v
+      }
+      0
+    }
+    b'g' => {
+      let x = Tp::tp_byte(self)
+      if exec {
+        let i = var_index(x)
+        Tp::tp_push(self, self.vars[i])
+      }
+      0
+    }
+    b'\'' => {
+      let x = Tp::tp_byte(self)
+      if self.pos.val >= n || self.fmt[self.pos.val] != b'\'' {
+        raise ExpandError::BadPercent("missing closing quote in %'c'")
+      }
+      self.pos.val += 1
+      if exec {
+        Tp::tp_push(self, x)
+      }
+      0
+    }
+    b'{' => {
+      let v = Tp::read_digits(self)
+      if self.pos.val >= n || self.fmt[self.pos.val] != b'}' {
+        raise ExpandError::BadPercent("missing } in %{nn}")
+      }
+      self.pos.val += 1
+      if exec {
+        Tp::tp_push(self, v)
+      }
+      0
+    }
+    b'l' => {
+      if exec {
+        let i = Tp::tp_pop(self)
+        if i < 0 || i >= self.string_params.length() {
+          raise ExpandError::StackUnderflow(
+            "string parameter index out of range",
+          )
+        }
+        Tp::tp_push(self, self.string_params[i].length())
+      }
+      0
+    }
+    b'+' => {
+      // As in ncurses, %+ is binary addition when the stack holds at
+      // least two operands, and a printf flag otherwise.
+      if self.stack.length() < 2 {
+        let conv = Tp::format_ahead(self)
+        if conv == 0 {
+          raise ExpandError::BadPercent("%+ needs two operands or a conversion")
+        }
+        self.pos.val -= 1
+        Tp::format_op(self, exec)
+      } else {
+        Tp::binop(self, exec, fn(a : Int, b : Int) { a + b })
+      }
+      0
+    }
+    b'-' => {
+      if self.stack.length() < 2 {
+        let conv = Tp::format_ahead(self)
+        if conv == 0 {
+          raise ExpandError::BadPercent("%- needs two operands or a conversion")
+        }
+        self.pos.val -= 1
+        Tp::format_op(self, exec)
+      } else {
+        Tp::binop(self, exec, fn(a : Int, b : Int) { a - b })
+      }
+      0
+    }
+    b'#'
+    | b' '
+    | b':'
+    | b'.'
+    | b'0'
+    | b'1'
+    | b'2'
+    | b'3'
+    | b'4'
+    | b'5'
+    | b'6'
+    | b'7'
+    | b'8'
+    | b'9' => {
+      let conv = Tp::format_ahead(self)
+      if conv == 0 {
+        raise ExpandError::BadPercent(
+          "printf flag or width without a numeric conversion",
+        )
+      }
+      self.pos.val -= 1
+      Tp::format_op(self, exec)
+      0
+    }
+    b'*' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) { a * b })
+      0
+    }
+    b'/' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) { a / b }, div_by_zero=true)
+      0
+    }
+    b'm' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) { a % b }, div_by_zero=true)
+      0
+    }
+    b'&' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) { a.land(b) })
+      0
+    }
+    b'|' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) { a.lor(b) })
+      0
+    }
+    b'^' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) { a.lxor(b) })
+      0
+    }
+    b'=' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) { if a == b { 1 } else { 0 } })
+      0
+    }
+    b'>' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) { if a > b { 1 } else { 0 } })
+      0
+    }
+    b'<' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) { if a < b { 1 } else { 0 } })
+      0
+    }
+    b'A' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) {
+        if a != 0 && b != 0 {
+          1
+        } else {
+          0
+        }
+      })
+      0
+    }
+    b'O' => {
+      Tp::binop(self, exec, fn(a : Int, b : Int) {
+        if a != 0 || b != 0 {
+          1
+        } else {
+          0
+        }
+      })
+      0
+    }
+    b'!' => {
+      if exec {
+        let a = Tp::tp_pop(self)
+        Tp::tp_push(self, if a == 0 { 1 } else { 0 })
+      }
+      0
+    }
+    b'~' => {
+      if exec {
+        let a = Tp::tp_pop(self)
+        Tp::tp_push(self, a.lnot())
+      }
+      0
+    }
+    b'c' => {
+      if exec {
+        let v = Tp::tp_pop(self)
+        self.out.write_byte((v & 0xFF).to_byte())
+      }
+      0
+    }
+    b'd' | b'o' | b'x' | b'X' => {
+      self.pos.val -= 1
+      Tp::format_op(self, exec)
+      0
+    }
+    b's' => {
+      if exec {
+        let i = Tp::tp_pop(self)
+        if i < 0 || i >= self.string_params.length() {
+          raise ExpandError::StackUnderflow(
+            "string parameter index out of range",
+          )
+        }
+        self.out.write_bytes(self.string_params[i])
+      }
+      0
+    }
+    b'$' => {
+      // %$ has no meaning; padding is handled on literal '$' above.
+      if exec {
+        self.out.write_byte(b'$')
+      }
+      0
+    }
+    _ => raise ExpandError::BadPercent("unknown % conversion")
+  }
+}
