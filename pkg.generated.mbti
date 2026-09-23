@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "username/terminfo"
+package "cstoooo/terminfo"
 
 // Values
 pub let bool_code_index : Map[String, Int]
