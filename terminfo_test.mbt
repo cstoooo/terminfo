@@ -61,14 +61,14 @@ fn adm3a_source() -> String {
 /// the man page exactly.
 test "adm3a compiles to the term(5) reference bytes" {
   let entry = expect_ok(fn() raise {
-    compile(parse_source(adm3a_source()), "adm3a")
+    @terminfo.compile(@terminfo.parse_source(adm3a_source()), "adm3a")
   })
-  assert_eq(expect_ok(fn() raise { to_bytes(entry) }), adm3a_golden())
+  assert_eq(expect_ok(fn() raise { @terminfo.to_bytes(entry) }), adm3a_golden())
 }
 
 ///|
 test "parse reads the term(5) reference bytes" {
-  let entry = expect_ok(fn() raise { parse(adm3a_golden()) })
+  let entry = expect_ok(fn() raise { @terminfo.parse(adm3a_golden()) })
   assert_eq(entry.names(), ["adm3a", "lsi adm3a"])
   assert_eq(entry.primary_name(), "adm3a")
   assert_eq(entry.longname(), "lsi adm3a")
@@ -90,8 +90,8 @@ test "parse reads the term(5) reference bytes" {
 ///|
 /// Parsing the reference bytes and writing them again reproduces the file.
 test "compiled entries round-trip byte-for-byte" {
-  let entry = expect_ok(fn() raise { parse(adm3a_golden()) })
-  assert_eq(expect_ok(fn() raise { to_bytes(entry) }), adm3a_golden())
+  let entry = expect_ok(fn() raise { @terminfo.parse(adm3a_golden()) })
+  assert_eq(expect_ok(fn() raise { @terminfo.to_bytes(entry) }), adm3a_golden())
 }
 
 ///|
@@ -99,11 +99,15 @@ test "compiled entries round-trip byte-for-byte" {
 /// defined) capabilities with their names, and survive a round-trip.
 test "extended capabilities round-trip" {
   let src = "mytest|my test terminal,\n\tcols#80, myflag, mynum#42, mystr=hello\\, world,\n"
-  let entry = expect_ok(fn() raise { compile(parse_source(src), "mytest") })
+  let entry = expect_ok(fn() raise {
+    @terminfo.compile(@terminfo.parse_source(src), "mytest")
+  })
   assert_eq(entry.get_bool("myflag"), Some(true))
   assert_eq(entry.get_num("mynum"), Some(42))
   assert_eq(entry.get_str("mystr"), Some(b"hello, world"))
-  let again = expect_ok(fn() raise { parse(to_bytes(entry)) })
+  let again = expect_ok(fn() raise {
+    @terminfo.parse(@terminfo.to_bytes(entry))
+  })
   assert_eq(again.get_bool("myflag"), Some(true))
   assert_eq(again.get_num("mynum"), Some(42))
   assert_eq(again.get_str("mystr"), Some(b"hello, world"))
@@ -114,10 +118,14 @@ test "extended capabilities round-trip" {
 /// negated, and survives a round-trip.
 test "canceled extended strings round-trip" {
   let src = "mytest|my test terminal,\n\tgone=old, gone@, mystr=hi,\n"
-  let entry = expect_ok(fn() raise { compile(parse_source(src), "mytest") })
+  let entry = expect_ok(fn() raise {
+    @terminfo.compile(@terminfo.parse_source(src), "mytest")
+  })
   assert_eq(entry.get_str("gone"), None)
   assert_eq(entry.get_str("mystr"), Some(b"hi"))
-  let again = expect_ok(fn() raise { parse(to_bytes(entry)) })
+  let again = expect_ok(fn() raise {
+    @terminfo.parse(@terminfo.to_bytes(entry))
+  })
   assert_eq(again.get_str("gone"), None)
   assert_eq(again.get_str("mystr"), Some(b"hi"))
 }
@@ -127,11 +135,15 @@ test "canceled extended strings round-trip" {
 /// the round-trip.
 test "empty string values round-trip" {
   let src = "mytest|my test terminal,\n\tbel=, cols#80,\n"
-  let entry = expect_ok(fn() raise { compile(parse_source(src), "mytest") })
+  let entry = expect_ok(fn() raise {
+    @terminfo.compile(@terminfo.parse_source(src), "mytest")
+  })
   assert_eq(entry.get_str("bell"), Some(b""))
   assert_eq(
     entry.get_str("bell"),
-    expect_ok(fn() raise { parse(to_bytes(entry)) }).get_str("bell"),
+    expect_ok(fn() raise { @terminfo.parse(@terminfo.to_bytes(entry)) }).get_str(
+      "bell",
+    ),
   )
 }
 
@@ -142,7 +154,9 @@ test "use= inheritance and overrides" {
   let src = "b1|base one,\n\tcols#80, bel=^G,\n" +
     "b2|base two,\n\tcols#100, cr=^M,\n" +
     "d|derived,\n\tuse=b1, use=b2, cols#132,\n"
-  let entry = expect_ok(fn() raise { compile(parse_source(src), "d") })
+  let entry = expect_ok(fn() raise {
+    @terminfo.compile(@terminfo.parse_source(src), "d")
+  })
   assert_eq(entry.get_num("columns"), Some(132))
   assert_eq(entry.get_str("bell"), Some(b"\x07"))
   assert_eq(entry.get_str("carriage_return"), Some(b"\x0d"))
@@ -153,7 +167,9 @@ test "use= inheritance and overrides" {
 test "use= with name@ cancellation" {
   let src = "base|base terminal,\n\tcols#80, lines#24, bel=^G,\n" +
     "derived|derived terminal,\n\tuse=base, lines@, bel@,\n"
-  let entry = expect_ok(fn() raise { compile(parse_source(src), "derived") })
+  let entry = expect_ok(fn() raise {
+    @terminfo.compile(@terminfo.parse_source(src), "derived")
+  })
   assert_eq(entry.get_num("columns"), Some(80))
   assert_eq(entry.get_num("lines"), None)
   assert_eq(entry.get_str("bell"), None)
@@ -163,10 +179,10 @@ test "use= with name@ cancellation" {
 test "use= cycle is detected" {
   let src = "a|entry a,\n\tuse=b,\nb|entry b,\n\tuse=a,\n"
   try {
-    compile(parse_source(src), "a") |> ignore
+    @terminfo.compile(@terminfo.parse_source(src), "a") |> ignore
     abort("expected CyclicUse")
   } catch {
-    ParseError::CyclicUse(_) => ()
+    @terminfo.ParseError::CyclicUse(_) => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
 }
@@ -175,10 +191,10 @@ test "use= cycle is detected" {
 test "use target must exist" {
   let src = "x|entry x,\n\tcols#80,\n"
   try {
-    compile(parse_source(src), "nope") |> ignore
+    @terminfo.compile(@terminfo.parse_source(src), "nope") |> ignore
     abort("expected BadSyntax")
   } catch {
-    ParseError::BadSyntax(_) => ()
+    @terminfo.ParseError::BadSyntax(_) => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
 }
@@ -188,11 +204,13 @@ test "use target must exist" {
 /// 32-bit magic (0o1036) and round-trip.
 test "32-bit numbers select the int32 magic" {
   let src = "big|big numbers,\n\tcols#80, mynum#40000,\n"
-  let entry = expect_ok(fn() raise { compile(parse_source(src), "big") })
-  let bytes = expect_ok(fn() raise { to_bytes(entry) })
+  let entry = expect_ok(fn() raise {
+    @terminfo.compile(@terminfo.parse_source(src), "big")
+  })
+  let bytes = expect_ok(fn() raise { @terminfo.to_bytes(entry) })
   assert_eq(bytes[0], b'\x1e')
   assert_eq(bytes[1], b'\x02')
-  let again = expect_ok(fn() raise { parse(bytes) })
+  let again = expect_ok(fn() raise { @terminfo.parse(bytes) })
   assert_eq(again.get_num("mynum"), Some(40000))
   assert_eq(again.get_num("columns"), Some(80))
 }
@@ -201,10 +219,11 @@ test "32-bit numbers select the int32 magic" {
 test "NUL inside a string capability is rejected" {
   let src = "bad|bad entry,\n\tbel=\\000,\n"
   try {
-    to_bytes(compile(parse_source(src), "bad")) |> ignore
+    @terminfo.to_bytes(@terminfo.compile(@terminfo.parse_source(src), "bad"))
+    |> ignore
     abort("expected BadCount")
   } catch {
-    ParseError::BadCount(_) => ()
+    @terminfo.ParseError::BadCount(_) => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
 }
@@ -212,41 +231,53 @@ test "NUL inside a string capability is rejected" {
 ///|
 test "bad magic and truncated files are rejected" {
   try {
-    parse(b"\x1b\x02nope") |> ignore
+    @terminfo.parse(b"\x1b\x02nope") |> ignore
     abort("expected BadMagic")
   } catch {
-    ParseError::BadMagic(_) => ()
+    @terminfo.ParseError::BadMagic(_) => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
   try {
-    parse(hex_to_bytes("1a0110000200030082003100")) |> ignore
+    @terminfo.parse(hex_to_bytes("1a0110000200030082003100")) |> ignore
     abort("expected Truncated")
   } catch {
-    ParseError::Truncated => ()
+    @terminfo.ParseError::Truncated => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
 }
 
 ///|
 test "source escapes expand" {
-  assert_eq(expect_ok(fn() raise { unescape_value("\\E[2J") }), b"\x1b[2J")
   assert_eq(
-    expect_ok(fn() raise { unescape_value("\\n\\l\\r\\t\\b\\f") }),
+    expect_ok(fn() raise { @terminfo.unescape_value("\\E[2J") }),
+    b"\x1b[2J",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.unescape_value("\\n\\l\\r\\t\\b\\f") }),
     b"\n\n\r\t\b\f",
   )
-  assert_eq(expect_ok(fn() raise { unescape_value("\\s\\:\\^\\\\") }), b" :^\\")
-  assert_eq(expect_ok(fn() raise { unescape_value("\\,") }), b",")
-  assert_eq(expect_ok(fn() raise { unescape_value("\\|") }), b"|")
-  assert_eq(expect_ok(fn() raise { unescape_value("\\032") }), b"\x1a")
-  assert_eq(expect_ok(fn() raise { unescape_value("\\0") }), b"\x00")
-  assert_eq(expect_ok(fn() raise { unescape_value("^G") }), b"\x07")
-  assert_eq(expect_ok(fn() raise { unescape_value("^?") }), b"\x7f")
-  assert_eq(expect_ok(fn() raise { unescape_value("plain") }), b"plain")
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.unescape_value("\\s\\:\\^\\\\") }),
+    b" :^\\",
+  )
+  assert_eq(expect_ok(fn() raise { @terminfo.unescape_value("\\,") }), b",")
+  assert_eq(expect_ok(fn() raise { @terminfo.unescape_value("\\|") }), b"|")
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.unescape_value("\\032") }),
+    b"\x1a",
+  )
+  assert_eq(expect_ok(fn() raise { @terminfo.unescape_value("\\0") }), b"\x00")
+  assert_eq(expect_ok(fn() raise { @terminfo.unescape_value("^G") }), b"\x07")
+  assert_eq(expect_ok(fn() raise { @terminfo.unescape_value("^?") }), b"\x7f")
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.unescape_value("plain") }),
+    b"plain",
+  )
   try {
-    unescape_value("\\q") |> ignore
+    @terminfo.unescape_value("\\q") |> ignore
     abort("expected BadSyntax")
   } catch {
-    ParseError::BadSyntax(_) => ()
+    @terminfo.ParseError::BadSyntax(_) => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
 }
@@ -259,7 +290,7 @@ test "parse_source handles comments, blanks and CRLF" {
     "base|base terminal,\r\n\tcols#80, lines#24,\r\n\r\n" +
     "# another comment\r\n" +
     "solo|solo entry,\r\n\tam,\r\n"
-  let entries = expect_ok(fn() raise { parse_source(src) })
+  let entries = expect_ok(fn() raise { @terminfo.parse_source(src) })
   assert_eq(entries.length(), 2)
   assert_eq(entries[0].names, ["base", "base terminal"])
   assert_eq(entries[1].names, ["solo", "solo entry"])
@@ -267,11 +298,17 @@ test "parse_source handles comments, blanks and CRLF" {
 
 ///|
 test "tparm prints numbers and characters" {
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%d", [42]) }), b"42")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%{32}%+%c", [5]) }), b"%")
-  assert_eq(expect_ok(fn() raise { tparm(b"%'a'%c", []) }), b"a")
-  assert_eq(expect_ok(fn() raise { tparm(b"100%%", []) }), b"100%")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%Pa%ga%d", [7]) }), b"7")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%p1%d", [42]) }), b"42")
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%{32}%+%c", [5]) }),
+    b"%",
+  )
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%'a'%c", []) }), b"a")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"100%%", []) }), b"100%")
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%Pa%ga%d", [7]) }),
+    b"7",
+  )
 }
 
 ///|
@@ -279,122 +316,181 @@ test "tparm prints numbers and characters" {
 /// adjustment, as used by term(5) itself.
 test "tparm expands the adm3a cup string" {
   let cup = expect_ok(fn() raise {
-    unescape_value("\\E=%p1%{32}%+%c%p2%{32}%+%c")
+    @terminfo.unescape_value("\\E=%p1%{32}%+%c%p2%{32}%+%c")
   })
-  assert_eq(expect_ok(fn() raise { tparm(cup, [5, 10]) }), b"\x1b=%*")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(cup, [5, 10]) }), b"\x1b=%*")
 }
 
 ///|
 test "tparm conditionals" {
-  assert_eq(expect_ok(fn() raise { tparm(b"%?%p1%tYES%eNO%;", [1]) }), b"YES")
-  assert_eq(expect_ok(fn() raise { tparm(b"%?%p1%tYES%eNO%;", [0]) }), b"NO")
   assert_eq(
-    expect_ok(fn() raise { tparm(b"%?%p1%t%?%p2%tAB%eCD%;%eXY%;", [1, 0]) }),
+    expect_ok(fn() raise { @terminfo.tparm(b"%?%p1%tYES%eNO%;", [1]) }),
+    b"YES",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%?%p1%tYES%eNO%;", [0]) }),
+    b"NO",
+  )
+  assert_eq(
+    expect_ok(fn() raise {
+      @terminfo.tparm(b"%?%p1%t%?%p2%tAB%eCD%;%eXY%;", [1, 0])
+    }),
     b"CD",
   )
   assert_eq(
-    expect_ok(fn() raise { tparm(b"%?%p1%t%?%p2%tAB%eCD%;%eXY%;", [0, 1]) }),
+    expect_ok(fn() raise {
+      @terminfo.tparm(b"%?%p1%t%?%p2%tAB%eCD%;%eXY%;", [0, 1])
+    }),
     b"XY",
   )
   assert_eq(
-    expect_ok(fn() raise { tparm(b"%?%p1%t%?%p2%tAB%eCD%;%eXY%;", [1, 1]) }),
+    expect_ok(fn() raise {
+      @terminfo.tparm(b"%?%p1%t%?%p2%tAB%eCD%;%eXY%;", [1, 1])
+    }),
     b"AB",
   )
   // The not-taken branch must be parsed but not executed.
   assert_eq(
-    expect_ok(fn() raise { tparm(b"%?%p1%t%p2%d%e%p3%d%;", [1, 5, 9]) }),
+    expect_ok(fn() raise {
+      @terminfo.tparm(b"%?%p1%t%p2%d%e%p3%d%;", [1, 5, 9])
+    }),
     b"5",
   )
   assert_eq(
-    expect_ok(fn() raise { tparm(b"%?%p1%t%p2%d%e%p3%d%;", [0, 5, 9]) }),
+    expect_ok(fn() raise {
+      @terminfo.tparm(b"%?%p1%t%p2%d%e%p3%d%;", [0, 5, 9])
+    }),
     b"9",
   )
 }
 
 ///|
 test "tparm increments and string parameters" {
-  assert_eq(expect_ok(fn() raise { tparm(b"%i%p1%d,%p2%d", [1, 1]) }), b"2,2")
   assert_eq(
-    expect_ok(fn() raise { tparm(b"%p1%s", [0], string_params=[b"hi"]) }),
+    expect_ok(fn() raise { @terminfo.tparm(b"%i%p1%d,%p2%d", [1, 1]) }),
+    b"2,2",
+  )
+  assert_eq(
+    expect_ok(fn() raise {
+      @terminfo.tparm(b"%p1%s", [0], string_params=[b"hi"])
+    }),
     b"hi",
   )
   assert_eq(
-    expect_ok(fn() raise { tparm(b"%p1%l%d", [0], string_params=[b"abc"]) }),
+    expect_ok(fn() raise {
+      @terminfo.tparm(b"%p1%l%d", [0], string_params=[b"abc"])
+    }),
     b"3",
   )
 }
 
 ///|
 test "tparm arithmetic and logic" {
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%*%d", [6, 7]) }), b"42")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%/%d", [7, 2]) }), b"3")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%m%d", [7, 3]) }), b"1")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%-%d", [10, 3]) }), b"7")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%&%d", [6, 3]) }), b"2")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%|%d", [6, 3]) }), b"7")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%^%d", [6, 3]) }), b"5")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%>%d", [3, 2]) }), b"1")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%<%d", [2, 3]) }), b"1")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%=%d", [3, 3]) }), b"1")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%A%d", [1, 1]) }), b"1")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%p2%O%d", [0, 1]) }), b"1")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%!%d", [0]) }), b"1")
-  assert_eq(expect_ok(fn() raise { tparm(b"%p1%~%d", [0]) }), b"-1")
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%*%d", [6, 7]) }),
+    b"42",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%/%d", [7, 2]) }),
+    b"3",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%m%d", [7, 3]) }),
+    b"1",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%-%d", [10, 3]) }),
+    b"7",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%&%d", [6, 3]) }),
+    b"2",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%|%d", [6, 3]) }),
+    b"7",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%^%d", [6, 3]) }),
+    b"5",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%>%d", [3, 2]) }),
+    b"1",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%<%d", [2, 3]) }),
+    b"1",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%=%d", [3, 3]) }),
+    b"1",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%A%d", [1, 1]) }),
+    b"1",
+  )
+  assert_eq(
+    expect_ok(fn() raise { @terminfo.tparm(b"%p1%p2%O%d", [0, 1]) }),
+    b"1",
+  )
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%p1%!%d", [0]) }), b"1")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%p1%~%d", [0]) }), b"-1")
 }
 
 ///|
 test "tparm printf-style flags" {
-  assert_eq(expect_ok(fn() raise { tparm(b"%-5d", [42]) }), b"42   ")
-  assert_eq(expect_ok(fn() raise { tparm(b"%5d", [42]) }), b"   42")
-  assert_eq(expect_ok(fn() raise { tparm(b"%+d", [42]) }), b"+42")
-  assert_eq(expect_ok(fn() raise { tparm(b"%+d", [-42]) }), b"-42")
-  assert_eq(expect_ok(fn() raise { tparm(b"% d", [42]) }), b" 42")
-  assert_eq(expect_ok(fn() raise { tparm(b"%.3d", [42]) }), b"042")
-  assert_eq(expect_ok(fn() raise { tparm(b"%d", [-42]) }), b"-42")
-  assert_eq(expect_ok(fn() raise { tparm(b"%#x", [42]) }), b"0x2a")
-  assert_eq(expect_ok(fn() raise { tparm(b"%X", [255]) }), b"FF")
-  assert_eq(expect_ok(fn() raise { tparm(b"%o", [8]) }), b"10")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%-5d", [42]) }), b"42   ")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%5d", [42]) }), b"   42")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%+d", [42]) }), b"+42")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%+d", [-42]) }), b"-42")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"% d", [42]) }), b" 42")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%.3d", [42]) }), b"042")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%d", [-42]) }), b"-42")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%#x", [42]) }), b"0x2a")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%X", [255]) }), b"FF")
+  assert_eq(expect_ok(fn() raise { @terminfo.tparm(b"%o", [8]) }), b"10")
 }
 
 ///|
 /// `$<...>` padding specifications are timing information, not output.
 test "tparm skips padding and strip_padding removes it" {
   assert_eq(
-    expect_ok(fn() raise { tparm(b"\x1b[2J$<50>\x1b[H", []) }),
+    expect_ok(fn() raise { @terminfo.tparm(b"\x1b[2J$<50>\x1b[H", []) }),
     b"\x1b[2J\x1b[H",
   )
-  assert_eq(strip_padding(b"a$<5>b"), b"ab")
-  assert_eq(strip_padding(b"no padding"), b"no padding")
+  assert_eq(@terminfo.strip_padding(b"a$<5>b"), b"ab")
+  assert_eq(@terminfo.strip_padding(b"no padding"), b"no padding")
 }
 
 ///|
 test "tparm rejects malformed strings" {
   try {
-    tparm(b"%q", []) |> ignore
+    @terminfo.tparm(b"%q", []) |> ignore
     abort("expected BadPercent")
   } catch {
-    ExpandError::BadPercent(_) => ()
+    @terminfo.ExpandError::BadPercent(_) => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
   try {
-    tparm(b"%p1%d", []) |> ignore
+    @terminfo.tparm(b"%p1%d", []) |> ignore
     abort("expected StackUnderflow")
   } catch {
-    ExpandError::StackUnderflow(_) => ()
+    @terminfo.ExpandError::StackUnderflow(_) => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
   try {
-    tparm(b"%t", []) |> ignore
+    @terminfo.tparm(b"%t", []) |> ignore
     abort("expected Unbalanced")
   } catch {
-    ExpandError::Unbalanced(_) => ()
+    @terminfo.ExpandError::Unbalanced(_) => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
   try {
-    tparm(b"%?%p1%tYES%eNO;", [0]) |> ignore
+    @terminfo.tparm(b"%?%p1%tYES%eNO;", [0]) |> ignore
     abort("expected Unbalanced")
   } catch {
-    ExpandError::Unbalanced(_) => ()
+    @terminfo.ExpandError::Unbalanced(_) => ()
     err => abort("wrong error: " + (err : Error).to_string())
   }
 }
